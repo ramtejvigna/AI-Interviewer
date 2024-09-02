@@ -1,24 +1,71 @@
-from flask import Flask, request, jsonify, session
+from flask import Flask, jsonify, request, session
 from flask_cors import CORS
-import torch
-import os
-import torchaudio
+from pymongo import MongoClient
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.feature_extraction.text import TfidfVectorizer
+import numpy as np
 import pyttsx3
 import sounddevice as sd
 import speech_recognition as sr
-import numpy as np
-import google.generativeai as genai
 import threading
+import google.generativeai as genai
 
-engine = pyttsx3.init()
-app = Flask(__name__, instance_relative_config=True)
+app = Flask(__name__)
 app.config.from_pyfile('config.py', silent=True)
-app.secret_key = os.environ['FLASK_SECRET']  # Necessary for session management
+app.secret_key = "amile_interview"  # Necessary for session management
 CORS(app)
 
-genai.configure(api_key=os.environ['GEMINI_API'])
+# MongoDB connection
+client = MongoClient('mongodb+srv://vignaramtejtelagarapu:vzNsqoKpAzHRdN9B@amile.auexv.mongodb.net/?retryWrites=true&w=majority&appName=Amile')
+db = client['test']
+mentors_collection = db['mentors']
+students_collection = db['students']
+
+# Initialize Google Generative AI
+genai.configure(api_key="AIzaSyC4dc-N80zxk2UZCCOA0oMN94YVT12SVW8")
 model = genai.GenerativeModel('gemini-1.5-flash')
 
+# Initialize Text-to-Speech engine
+engine = pyttsx3.init()
+
+def fetch_profiles(collection):
+    """Fetches the profiles from MongoDB collection."""
+    profiles = list(collection.find({}, {'_id': 0, 'skills': 1, 'username': 1}))
+    for profile in profiles:
+        if isinstance(profile['skills'], list):
+            profile['skills'] = ', '.join(profile['skills'])
+    return profiles
+
+def compute_similarity(mentors, students):
+    """Computes cosine similarity between mentor and student profiles."""
+    all_profiles = [mentor['skills'] for mentor in mentors] + [student['skills'] for student in students]
+    vectorizer = TfidfVectorizer()
+    tfidf_matrix = vectorizer.fit_transform(all_profiles)
+    cosine_sim = cosine_similarity(tfidf_matrix[:len(mentors)], tfidf_matrix[len(mentors):])
+    return cosine_sim
+
+def get_best_match_for_mentors(mentors, students, similarity_matrix):
+    """Get the best matching students for each mentor."""
+    results = {mentor['username']: [] for mentor in mentors}
+    for student_index, student in enumerate(students):
+        best_mentor_index = np.argmax(similarity_matrix[:, student_index])
+        best_mentor = mentors[best_mentor_index]
+        best_score = similarity_matrix[best_mentor_index, student_index]
+        results[best_mentor['username']].append({"student": student['username'], "score": best_score})
+    return results
+
+@app.route('/match', methods=['GET'])
+def match_mentors_students():
+    mentors = fetch_profiles(mentors_collection)
+    students = fetch_profiles(students_collection)
+
+    if not mentors or not students:
+        return jsonify({"error": "Mentors or students data is missing"}), 404
+
+    similarity_matrix = compute_similarity(mentors, students)
+    results = get_best_match_for_mentors(mentors, students, similarity_matrix)
+
+    return jsonify(results)
 
 def record_audio(duration, sample_rate):
     frames = int(duration * sample_rate)  # Calculate the number of frames
@@ -26,10 +73,8 @@ def record_audio(duration, sample_rate):
     sd.wait()  # Wait until recording is finished
     return audio
 
-
 def normalize_audio(audio):
     return np.int16(audio / np.max(np.abs(audio)) * 32767)
-
 
 def transcribe_audio(audio, sample_rate):
     recognizer = sr.Recognizer()
@@ -43,12 +88,10 @@ def transcribe_audio(audio, sample_rate):
     except sr.RequestError as e:
         return None
 
-
 def ask_question():
     prompt = "You are an interviewer now. Introduce yourself as a Manager in Amile and your name is Hakunamatata and start the interview."
     response = model.generate_content(prompt)
     return response.text
-
 
 def generate_followup(interview_question, user_response, conversation_history):
     # Include conversation history in the prompt
@@ -56,7 +99,6 @@ def generate_followup(interview_question, user_response, conversation_history):
     prompt = f"Here is the conversation so far:\n{history_prompt}\nYou asked the candidate: '{interview_question}'. The candidate responded: '{user_response}'. Now respond as an interviewer with a precise question."
     response = model.generate_content(prompt)
     return response.text
-
 
 def speak_question(question):
     try:
@@ -80,7 +122,6 @@ def get_question():
     threading.Thread(target=speak_question, args=(question,)).start()
 
     return jsonify({"question": question})
-
 
 @app.route('/transcribe', methods=['POST'])
 def transcribe():
@@ -124,4 +165,3 @@ def display_feedback():
 
 if __name__ == '__main__':
     app.run(debug=True, use_reloader=False)
-
