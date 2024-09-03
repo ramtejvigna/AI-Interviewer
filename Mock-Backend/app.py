@@ -44,14 +44,17 @@ def compute_similarity(mentors, students):
     cosine_sim = cosine_similarity(tfidf_matrix[:len(mentors)], tfidf_matrix[len(mentors):])
     return cosine_sim
 
-def get_best_match_for_mentors(mentors, students, similarity_matrix):
-    """Get the best matching students for each mentor."""
+def get_best_match_for_mentors(mentors, students, similarity_matrix, threshold=0.2):
+    """Get the best matching students for each mentor, only if the similarity score is above the threshold."""
     results = {mentor['username']: [] for mentor in mentors}
     for student_index, student in enumerate(students):
         best_mentor_index = np.argmax(similarity_matrix[:, student_index])
         best_mentor = mentors[best_mentor_index]
         best_score = similarity_matrix[best_mentor_index, student_index]
-        results[best_mentor['username']].append({"student": student['username'], "score": best_score})
+        
+        if best_score > threshold:
+            results[best_mentor['username']].append({"student": student['username'], "score": best_score})
+    
     return results
 
 @app.route('/match', methods=['GET'])
@@ -65,7 +68,8 @@ def match_mentors_students():
     similarity_matrix = compute_similarity(mentors, students)
     results = get_best_match_for_mentors(mentors, students, similarity_matrix)
 
-    return jsonify(results)
+    return jsonify(results), 200
+
 
 def record_audio(duration, sample_rate):
     frames = int(duration * sample_rate)  # Calculate the number of frames
@@ -164,4 +168,4 @@ def display_feedback():
     return feedback
 
 if __name__ == '__main__':
-    app.run(debug=True, use_reloader=False)
+    app.run(debug=True)
