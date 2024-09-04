@@ -93,11 +93,18 @@ def match_students_to_mentors():
 
     similarity_matrix = compute_similarity(mentors, students)
     results = get_best_match_for_students(mentors, students, similarity_matrix)
-
+    
     student_username = request.args.get('username')
+    mentor_index = int(request.args.get('index', 0))
 
     if student_username in results:
-        return jsonify(results[student_username]), 200
+        mentor_matches = results[student_username]
+        if mentor_matches:
+            # Use modulo to wrap around the index if it exceeds the array length
+            mentor_index = mentor_index % len(mentor_matches)
+            return jsonify(mentor_matches[mentor_index]), 200
+        else:
+            return jsonify({"error": "No mentor matches found for the student"}), 404
     else:
         return jsonify({"error": "Student not found"}), 404
 
