@@ -70,6 +70,33 @@ def match_mentors_students():
 
     return jsonify(results), 200
 
+def get_best_match_for_students(mentors, students, similarity_matrix, threshold=0.2):
+    """Get the best matching mentors for each student, only if the similarity score is above the threshold."""
+    results = {student['username']: [] for student in students}
+    for mentor_index, mentor in enumerate(mentors):
+        best_student_index = np.argmax(similarity_matrix[mentor_index])
+        best_student = students[best_student_index]
+        best_score = similarity_matrix[mentor_index, best_student_index]
+        
+        if best_score > threshold:
+            results[best_student['username']].append({"mentor": mentor['username'], "score": best_score})
+    
+    return results
+
+@app.route('/match-students', methods=['GET'])
+def match_students_to_mentors():
+    mentors = fetch_profiles(mentors_collection)
+    students = fetch_profiles(students_collection)
+
+    if not mentors or not students:
+        return jsonify({"error": "Mentors or students data is missing"}), 404
+
+    similarity_matrix = compute_similarity(mentors, students)
+    results = get_best_match_for_students(mentors, students, similarity_matrix)
+
+    return jsonify(results), 200
+
+
 
 def record_audio(duration, sample_rate):
     frames = int(duration * sample_rate)  # Calculate the number of frames
