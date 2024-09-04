@@ -1,3 +1,4 @@
+import random
 from flask import Flask, jsonify, request, session
 from flask_cors import CORS
 from pymongo import MongoClient
@@ -104,7 +105,8 @@ def match_students_to_mentors():
             mentor_index = mentor_index % len(mentor_matches)
             return jsonify(mentor_matches[mentor_index]), 200
         else:
-            return jsonify({"error": "No mentor matches found for the student"}), 404
+            random_mentor = random.choice(mentors)
+            return jsonify({"mentor": random_mentor['username'], "score": "Random assignment"}), 200
     else:
         return jsonify({"error": "Student not found"}), 404
 
