@@ -30,60 +30,79 @@ model = genai.GenerativeModel('gemini-1.5-flash')
 engine = pyttsx3.init()
 
 def fetch_profiles(collection):
-    """Fetches the profiles from MongoDB collection."""
+    """Fetches the profiles from MongoDB collection and processes skills."""
     profiles = list(collection.find({}, {'_id': 0, 'skills': 1, 'username': 1}))
     for profile in profiles:
         if isinstance(profile['skills'], list):
-            profile['skills'] = ', '.join(profile['skills'])
+            # Convert skills to lowercase and join them as a string
+            profile['skills'] = ', '.join([skill.lower() for skill in profile['skills']])
     return profiles
 
 def compute_similarity(mentors, students):
     """Computes cosine similarity between mentor and student profiles."""
-    all_profiles = [mentor['skills'] for mentor in mentors] + [student['skills'] for student in students]
+    # Combine mentor and student skills, ensuring lowercase conversion
+    all_profiles = [mentor['skills'] for mentor in mentors] + \
+                   [student['skills'] for student in students]
+    
     vectorizer = TfidfVectorizer()
     tfidf_matrix = vectorizer.fit_transform(all_profiles)
+    # Compute cosine similarity matrix between mentors and students
     cosine_sim = cosine_similarity(tfidf_matrix[:len(mentors)], tfidf_matrix[len(mentors):])
+    
     return cosine_sim
 
-def get_best_match_for_mentors(mentors, students, similarity_matrix, threshold=0.2):
-    """Get the best matching students for each mentor, only if the similarity score is above the threshold."""
-    results = {mentor['username']: [] for mentor in mentors}
-    for student_index, student in enumerate(students):
-        best_mentor_index = np.argmax(similarity_matrix[:, student_index])
-        best_mentor = mentors[best_mentor_index]
-        best_score = similarity_matrix[best_mentor_index, student_index]
-        
-        if best_score > threshold:
-            results[best_mentor['username']].append({"student": student['username'], "score": best_score})
+def get_best_match_for_mentors(mentors, students, cosine_sim):
+    """Returns the best student matches for each mentor based on similarity, with a threshold."""
+    mentor_matches = {}
+    threshold = 0.2  # Similarity score threshold
+    for i, mentor in enumerate(mentors):
+        best_matches = [
+            {"student": students[j]['username'], "score": cosine_sim[i][j]}
+            for j in range(len(students)) if cosine_sim[i][j] > threshold
+        ]
+        # Sort matches by highest score
+        best_matches.sort(key=lambda x: x["score"], reverse=True)
+        mentor_matches[mentor['username']] = best_matches
+    return mentor_matches
+
+def get_best_match_for_students(students, mentors, cosine_sim):
+    """Returns the best mentor matches for each student based on similarity, with a threshold."""
+    student_matches = {}
+    threshold = 0.2  # Similarity score threshold
+
+    # Iterate over the students and check that the cosine_sim dimensions are correct
+    for j, student in enumerate(students):
+        best_matches = []
+        for i in range(len(mentors)):
+            # Check if the current index exists in cosine_sim to prevent IndexError
+            if i < len(cosine_sim) and j < len(cosine_sim[i]):
+                if cosine_sim[i][j] > threshold:
+                    best_matches.append({
+                        "mentor": mentors[i]['username'], 
+                        "score": cosine_sim[i][j]
+                    })
+        # Sort matches by highest score
+        best_matches.sort(key=lambda x: x["score"], reverse=True)
+        student_matches[student['username']] = best_matches
     
-    return results
+    return student_matches
+
 
 @app.route('/match', methods=['GET'])
 def match_mentors_students():
+    """API endpoint to match mentors and students."""
     mentors = fetch_profiles(mentors_collection)
     students = fetch_profiles(students_collection)
 
     if not mentors or not students:
         return jsonify({"error": "Mentors or students data is missing"}), 404
 
+    # Compute the similarity matrix
     similarity_matrix = compute_similarity(mentors, students)
-    results = get_best_match_for_mentors(mentors, students, similarity_matrix)
 
-    return jsonify(results), 200
+    results_mentors = get_best_match_for_mentors(mentors, students, similarity_matrix)
 
-def get_best_match_for_students(mentors, students, similarity_matrix, threshold=0.2):
-    """Get the best matching mentors for each student, only if the similarity score is above the threshold."""
-    results = {student['username']: [] for student in students}
-    for mentor_index, mentor in enumerate(mentors):
-        best_student_index = np.argmax(similarity_matrix[mentor_index])
-        best_student = students[best_student_index]
-        best_score = similarity_matrix[mentor_index, best_student_index]
-        
-        if best_score > threshold:
-            results[best_student['username']].append({"mentor": mentor['username'], "score": best_score})
-    
-    return results
-
+    return jsonify(results_mentors), 200
 @app.route('/match-students', methods=['GET'])
 def match_students_to_mentors():
     mentors = fetch_profiles(mentors_collection)
@@ -93,10 +112,12 @@ def match_students_to_mentors():
         return jsonify({"error": "Mentors or students data is missing"}), 404
 
     similarity_matrix = compute_similarity(mentors, students)
-    results = get_best_match_for_students(mentors, students, similarity_matrix)
+    results = get_best_match_for_students(students, mentors, similarity_matrix)
     
-    student_username = request.args.get('username')
+    student_username = request.args.get('username', '').lower()
     mentor_index = int(request.args.get('index', 0))
+
+    print("Requested student:", student_username)  # Debug print
 
     if student_username in results:
         mentor_matches = results[student_username]
@@ -106,11 +127,9 @@ def match_students_to_mentors():
             return jsonify(mentor_matches[mentor_index]), 200
         else:
             random_mentor = random.choice(mentors)
-            return jsonify({"mentor": random_mentor['username'], "score": "Random assignment"}), 200
+            return jsonify({"mentor": random_mentor['username'], "score": "Random Assignment" }), 200
     else:
         return jsonify({"error": "Student not found"}), 404
-
-
 
 def record_audio(duration, sample_rate):
     frames = int(duration * sample_rate)  # Calculate the number of frames
@@ -133,17 +152,50 @@ def transcribe_audio(audio, sample_rate):
     except sr.RequestError as e:
         return None
 
-def ask_question():
-    prompt = "You are an interviewer now. Introduce yourself as a Manager in Amile and your name is Hakunamatata and start the interview."
+def fetch_courses(course_ids):
+    """Fetches course details from MongoDB based on course IDs."""
+    courses = db['courses'].find({'_id': {'$in': course_ids}})
+    course_names = {str(course['_id']): course['courseName'] for course in courses}
+    return course_names
+
+def fetch_mentors(mentor_ids):
+    """Fetches mentor details from MongoDB based on mentor IDs."""
+    mentors = db['mentors'].find({'_id': {'$in': mentor_ids}})
+    mentor_names = {str(mentor['_id']): mentor['name'] for mentor in mentors}
+    return mentor_names
+
+def resolve_user_profile(user_profile):
+    """Resolve ObjectIds in user profile to human-readable names."""
+    course_ids = user_profile.get('enrolledCourses', [])
+    mentor_id = user_profile.get('mentor')
+    
+    course_names = fetch_courses(course_ids)
+    mentor_names = fetch_mentors([mentor_id]) if mentor_id else {}
+    
+    # Update user profile with course names and mentor name
+    resolved_profile = user_profile.copy()
+    resolved_profile['enrolledCourses'] = [course_names.get(str(course_id), str(course_id)) for course_id in course_ids]
+    resolved_profile['mentor'] = mentor_names.get(str(mentor_id), str(mentor_id)) if mentor_id else None
+    
+    return resolved_profile
+
+def ask_question(user_profile):
+    # Create a prompt incorporating the user profile data
+    user_profile = resolve_user_profile(user_profile)
+    user_info = f"User Profile: {user_profile}"
+    prompt = f"You are an interviewer now. Introduce yourself as a Manager in Amile and your name is Hakunamatata. Start the interview based on the following user profile data: {user_info}"
     response = model.generate_content(prompt)
     return response.text
 
-def generate_followup(interview_question, user_response, conversation_history):
-    # Include conversation history in the prompt
+def generate_followup(interview_question, user_response, conversation_history, user_profile):
+    # Include user profile data in the prompt if necessary
+    user_profile = resolve_user_profile(user_profile)
     history_prompt = "\n".join([f"Q: {item['question']} A: {item['response']}" for item in conversation_history])
-    prompt = f"Here is the conversation so far:\n{history_prompt}\nYou asked the candidate: '{interview_question}'. The candidate responded: '{user_response}'. Now respond as an interviewer with a precise question."
+    user_info = f"User Profile: {user_profile}"
+    prompt = f"Here is the conversation so far:\n{history_prompt}\nUser info: {user_info}\nYou asked the candidate: '{interview_question}'. The candidate responded: '{user_response}'. Now respond as an interviewer with a precise question."
     response = model.generate_content(prompt)
     return response.text
+
 
 def speak_question(question):
     try:
@@ -156,8 +208,20 @@ def speak_question(question):
 
 @app.route('/ask-question', methods=['GET'])
 def get_question():
-    # Fetch the first question
-    question = ask_question()
+    # Retrieve username from query parameters or session cookies
+    username = request.args.get('username')  # or you can get it from cookies/session
+
+    if not username:
+        return jsonify({"error": "Username is required"}), 400
+
+    # Fetch user profile from MongoDB
+    user_profile = students_collection.find_one({'username': username}, {'_id': 0})
+    
+    if not user_profile:
+        return jsonify({"error": "User not found"}), 404
+
+    # Use user_profile for generating a question
+    question = ask_question(user_profile)
 
     # Initialize session to store conversation history
     if 'conversation_history' not in session:
@@ -173,6 +237,7 @@ def transcribe():
     duration = request.json.get('duration')
     sample_rate = request.json.get('sample_rate')
     interview_question = request.json.get('question')
+    username = request.json.get('username')  # Include username
 
     audio = record_audio(duration, sample_rate)
     user_response = transcribe_audio(audio, sample_rate)
@@ -185,8 +250,11 @@ def transcribe():
         conversation_history.append({"question": interview_question, "response": user_response})
         session['conversation_history'] = conversation_history
 
-        # Generate the follow-up question based on conversation history
-        followup = generate_followup(interview_question, user_response, conversation_history)
+        # Fetch user profile for generating follow-up
+        user_profile = students_collection.find_one({'username': username}, {'_id': 0})
+
+        # Generate the follow-up question based on conversation history and user profile
+        followup = generate_followup(interview_question, user_response, conversation_history, user_profile)
 
         # Start a new thread for speech synthesis
         threading.Thread(target=speak_question, args=(followup,)).start()
