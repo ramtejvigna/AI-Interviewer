@@ -239,6 +239,9 @@ def transcribe():
     interview_question = request.json.get('question')
     username = request.json.get('username')  # Include username
 
+    if not duration or not sample_rate or not interview_question or not username:
+        return jsonify({"error": "Missing required parameters"}), 400
+
     audio = record_audio(duration, sample_rate)
     user_response = transcribe_audio(audio, sample_rate)
 
@@ -253,6 +256,9 @@ def transcribe():
         # Fetch user profile for generating follow-up
         user_profile = students_collection.find_one({'username': username}, {'_id': 0})
 
+        if user_profile is None:
+            return jsonify({"error": "User profile not found"}), 404
+
         # Generate the follow-up question based on conversation history and user profile
         followup = generate_followup(interview_question, user_response, conversation_history, user_profile)
 
@@ -262,6 +268,7 @@ def transcribe():
         return jsonify({"response": followup, "audio": user_response})
     else:
         return jsonify({"error": "Could not understand the audio"}), 400
+
 
 @app.route('/feedback', methods=['POST'])
 def get_feedback():
